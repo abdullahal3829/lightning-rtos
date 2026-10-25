@@ -1,0 +1,8 @@
+build/
+*.a
+*.o
+*.elf
+*.so
+*.img
+*.iso
+*.tmp
