@@ -4,15 +4,21 @@
 .code16
 
 _start:
+    lea si, [LDSuccess]
+    call print
+    
     cli                     # Disable interrupts during setup
     xor ax, ax
     mov ds, ax              # Data segment = 0
     mov es, ax              # Extra segment = 0
     mov ss, ax              # Stack segment = 0
-    mov sp, 0x7C00          # Stack grows downward
+    mov sp, 0x0500          # Stack grows downward
     cld                     # String instructions go forward
     sti                     # Re-enable interrupts
     mov [bootdrive], dl     # Save boot drive index
+
+    lea si, [LDSuccess]
+    call print
 
     # Enable A20 Line via Fast A20 Gate
     in al, 0x92
@@ -40,22 +46,27 @@ edd_ok:
     jmp diskerr
 
 try_chs:
-    # Fallback: Standard INT 13h AH=02h (Read Sectors CHS)
-    # Floppy: LBA 1 = Cylinder 0, Head 0, Sector 2
     mov dl, [bootdrive]
-    mov ah, 0x02            # Read sectors
-    mov al, LOADER_SECTORS  # Number of sectors to read
+    
+    # FIX: Point ES:BX to 0x07e0:0x0000 instead of 0x0000:0x7E00
+    mov ax, 0x07e0          
+    mov es, ax
+    mov bx, 0x0000          
+    
+    mov ah, 0x02            # Read sectors function
+    mov al, 64              # Number of sectors to read (32 KB)
     mov ch, 0               # Cylinder 0
-    mov cl, 2               # Sector 2 (LBA 1 = Sector 2 on floppy)
+    mov cl, 1               # Sector 1 (FIXED: was 2, loader.bin starts at sector 1)
     mov dh, 0               # Head 0
-    mov bx, 0x8000          # Buffer offset (ES:BX = 0x0000:0x8000)
     int 0x13
     jc diskerr
 
 read_ok:
-    # Jump to second stage (Physical Address: 0x8000)
+    lea si, [BTSuccess]
+    call print
+    # Jump to second stage (Physical Address: 0x7E00)
     mov dl, [bootdrive]
-    jmp 0x0000:0x8000
+    jmp 0x0000:0x7E00
 
 print:
     lodsb                   # Load byte from DS:SI into AL
@@ -96,13 +107,19 @@ incapMSG:
 bootdrive:
     .byte 0
 
+BTSuccess:
+    .asciz "Bootloader Swapped\r\n"
+
+LDSuccess:
+    .asciz "_start\r\n"
+
 .align 4
 dap:
     .byte 0x10              # Size of packet (16 bytes)
     .byte 0                 # Reserved
-    .word LOADER_SECTORS    # Number of sectors to transfer, sized automatically
-    .word 0x8000            # Buffer Offset (0x8000)
-    .word 0x0000            # Buffer Segment (0x0000) -> 0x0000:0x8000
+    .word 64                # Number of sectors to transfer (64 sectors = 32 KB)
+    .word 0x0000            # Buffer Offset (0x0000) <- CHANGED TO 0
+    .word 0x07e0            # Buffer Segment (0x07e0) <- CHANGED TO 0x07e0
     .quad 1                 # Starting LBA Address (Sector 1)
 
 .org 510

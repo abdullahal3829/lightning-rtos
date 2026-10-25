@@ -1,46 +1,61 @@
-// Physical memory address where the CGA text mode buffer starts
-#define CGA_VIDEO_MEMORY ((volatile char*)0xB8000)
+#include "vesa.h"
+#include <stdint.h>
 
-// Standard CGA console metrics
-#define SCREEN_COLS 80
-#define SCREEN_ROWS 25
+extern uint8_t inb(uint16_t port);
+extern void outb(uint16_t port, uint8_t value);
 
-// Attribute bytes (Color format: [Background 4-bits][Foreground 4-bits])
-#define COLOR_WHITE_ON_BLACK 0x07
-#define COLOR_GREEN_ON_BLACK 0x02
+enum {
+    COM1 = 0x3F8,
+    UART_DATA = 0,
+    UART_INTERRUPT_ENABLE = 1,
+    UART_LINE_CONTROL = 3,
+    UART_FIFO_CONTROL = 2,
+    UART_LINE_STATUS = 5,
+};
 
-void clear_screen() {
-    volatile char* video = CGA_VIDEO_MEMORY;
-    int total_chars = SCREEN_COLS * SCREEN_ROWS;
-    
-    for (int i = 0; i < total_chars; i++) {
-        video[i * 2] = ' ';                     // Blank character ASCII
-        video[i * 2 + 1] = COLOR_WHITE_ON_BLACK; // Default display attribute
+static void serialInit(void) {
+    /* Configure the 16550 UART before polling its transmit status. */
+    outb(COM1 + UART_INTERRUPT_ENABLE, 0x00);
+    outb(COM1 + UART_LINE_CONTROL, 0x80); /* Enable divisor latch. */
+    outb(COM1 + UART_DATA, 0x01);         /* 115200 baud, low divisor. */
+    outb(COM1 + UART_INTERRUPT_ENABLE, 0x00);
+    outb(COM1 + UART_LINE_CONTROL, 0x03); /* 8 data bits, no parity, 1 stop. */
+    outb(COM1 + UART_FIFO_CONTROL, 0xC7);
+    outb(COM1 + 4, 0x0B);                /* DTR, RTS, and OUT2. */
+}
+
+void PSerialWrite(const char *str) {
+    while (*str != '\0') {
+        while ((inb(COM1 + UART_LINE_STATUS) & 0x20U) == 0U) {
+            /* wait until the transmit holding register is empty */
+        }
+        outb(COM1 + UART_DATA, (uint8_t)*str++);
     }
 }
 
-void print_string(const char* str, int row, int col, char attribute) {
-    volatile char* video = CGA_VIDEO_MEMORY;
-    
-    // Calculate byte offset: (row * 80 columns + starting column) * 2 bytes per character
-    int offset = (row * SCREEN_COLS + col) * 2;
-    
-    for (int i = 0; str[i] != '\0'; i++) {
-        video[offset] = str[i];          // Write the ASCII text character
-        video[offset + 1] = attribute;   // Write the video attribute color byte
-        offset += 2;                     // Move forward by 2 bytes (1 character block)
-    }
+void PSerialWriteHex(uint16_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    char buf[7];
+
+    buf[0] = '0';
+    buf[1] = 'x';
+    buf[2] = digits[(value >> 12) & 0xF];
+    buf[3] = digits[(value >> 8) & 0xF];
+    buf[4] = digits[(value >> 4) & 0xF];
+    buf[5] = digits[value & 0xF];
+    buf[6] = '\0';
+
+    PSerialWrite(buf);
 }
 
 void lmain() {
-    // Clear out residual BIOS characters from screen memory
-    clear_screen();
-    
-    // Write "Hello World!" centered horizontally around line 12
-    print_string("Hello World!", 12, 34, COLOR_GREEN_ON_BLACK);
-    
-    // Keep the CPU processing thread alive permanently inside 32-bit mode
-    while (1) {
+    serialInit();
+    PSerialWrite("ChainLoaded\r\n");
+
+    /* RGB blue; draw a visible 45-degree line instead of one repeated pixel. */
+    for (int coordinate = 1; coordinate < 512; ++coordinate)
+        drawFramebuffer(coordinate, coordinate, 0x000000FFU);
+
+    for (;;)
         __asm__ __volatile__("hlt");
-    }
 }

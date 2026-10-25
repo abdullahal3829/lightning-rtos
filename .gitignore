@@ -1,3 +1,17 @@
+# Code Editor Files
+.vs/
+.vscode/
+.corsor/
+.antigravity/
+.claude/
+.idea/
+*.iml
+*.sln
+*.suo
+*.vcxproj
+*.vc*
+
+# Binary Output
 build/
 *.a
 *.o
@@ -6,3 +20,4 @@ build/
 *.img
 *.iso
 *.tmp
+*.log
