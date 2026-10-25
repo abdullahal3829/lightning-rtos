@@ -1,10 +1,13 @@
-# Code Editor Files
+# Code Editor And AI Agent Files
 .vs/
 .vscode/
 .corsor/
 .antigravity/
 .claude/
 .idea/
+.agent/
+.aws/
+.codex/
 *.iml
 *.sln
 *.suo

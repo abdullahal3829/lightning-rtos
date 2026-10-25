@@ -47,7 +47,7 @@ typedef enum VbeMode {
     VBE_MODE_TEXT_132x60        = 0x10C,
 } VbeMode;
 
-typedef struct VbeInfoBlock {
+typedef struct __attribute__((packed)) VbeInfoBlock {
    char     VbeSignature[4];         // == "VESA"
    uint16_t VbeVersion;              // == 0x0300 for VBE 3.0
    uint16_t OemStringPtr[2];         // isa vbeFarPtr
@@ -55,7 +55,7 @@ typedef struct VbeInfoBlock {
    uint16_t VideoModePtr[2];         // isa vbeFarPtr
    uint16_t TotalMemory;             // as # of 64KB blocks
    uint8_t  Reserved[492];
-} VbeInfoBlock __attribute__((packed));
+} VbeInfoBlock;
 
 struct vbe_mode_info_structure {
 	uint16_t attributes;		// deprecated, only bit 7 should be of interest to you, and it indicates the mode supports a linear frame buffer.

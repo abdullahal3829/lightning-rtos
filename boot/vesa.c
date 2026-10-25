@@ -11,7 +11,8 @@
 #define VBE_DISPI_YRES       0x0002U
 #define VBE_DISPI_BPP        0x0003U
 #define VBE_DISPI_VIRT_WIDTH 0x0006U
-#define VBE_DISPI_LFB_ENABLE 0x0041U
+#define VBE_DISPI_ENABLED    0x0001U
+#define VBE_DISPI_LFB_ENABLE 0x0040U
 #define PCI_CONFIG_ADDRESS   0x0CF8U
 #define PCI_CONFIG_DATA      0x0CFCU
 
@@ -57,14 +58,14 @@ static uint32_t findVgaFramebufferBase(void) {
 
 static uint16_t vbeDispiRead(uint16_t index) {
     uint16_t value;
-    __asm__ __volatile__("outw %0, %1" : : "a"(index), "Nd"(VBE_DISPI_INDEX_PORT));
-    __asm__ __volatile__("inw %1, %0" : "=a"(value) : "Nd"(VBE_DISPI_DATA_PORT));
+    __asm__ __volatile__("outw %w0, %w1" : : "a"(index), "Nd"(VBE_DISPI_INDEX_PORT));
+    __asm__ __volatile__("inw %w1, %w0" : "=a"(value) : "Nd"(VBE_DISPI_DATA_PORT));
     return value;
 }
 
 static void vbeDispiWrite(uint16_t index, uint16_t value) {
-    __asm__ __volatile__("outw %0, %1" : : "a"(index), "Nd"(VBE_DISPI_INDEX_PORT));
-    __asm__ __volatile__("outw %0, %1" : : "a"(value), "Nd"(VBE_DISPI_DATA_PORT));
+    __asm__ __volatile__("outw %w0, %w1" : : "a"(index), "Nd"(VBE_DISPI_INDEX_PORT));
+    __asm__ __volatile__("outw %w0, %w1" : : "a"(value), "Nd"(VBE_DISPI_DATA_PORT));
 }
 
 static int configureQemuLinearFramebuffer(void) {
@@ -78,23 +79,24 @@ static int configureQemuLinearFramebuffer(void) {
 
     /* QEMU's Bochs VBE device exposes the linear framebuffer in PCI BAR0. */
     vbeDispiWrite(VBE_DISPI_ENABLE, 0U);
-    vbeDispiWrite(VBE_DISPI_XRES, 1280U);
-    vbeDispiWrite(VBE_DISPI_YRES, 1024U);
+    vbeDispiWrite(VBE_DISPI_XRES, 800U);
+    vbeDispiWrite(VBE_DISPI_YRES, 600U);
     vbeDispiWrite(VBE_DISPI_BPP, 32U);
-    vbeDispiWrite(VBE_DISPI_VIRT_WIDTH, 1280U);
-    vbeDispiWrite(VBE_DISPI_ENABLE, VBE_DISPI_LFB_ENABLE);
+    vbeDispiWrite(VBE_DISPI_VIRT_WIDTH, 800U);
+    /* Bit 0 enables the VBE device; bit 6 selects its linear framebuffer. */
+    vbeDispiWrite(VBE_DISPI_ENABLE, VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLE);
 
     g_framebuffer.base = framebuffer_base;
-    g_framebuffer.width = 1280U;
-    g_framebuffer.height = 1024U;
-    g_framebuffer.pitch = 1280U * 4U;
+    g_framebuffer.width = 800U;
+    g_framebuffer.height = 600U;
+    g_framebuffer.pitch = 800U * 4U;
     g_framebuffer.bpp = 32U;
     return 1;
 }
 
-VbeInfoBlock g_vbe_info = {0};
-int vbeIsInited = 0;
-uint16_t curVBEMode = 0U;
+VbeInfoBlock g_vbe_info __attribute__((section(".lowdata"))) = {0};
+int vbeIsInited __attribute__((section(".lowdata"))) = 0;
+uint16_t curVBEMode __attribute__((section(".lowdata"))) = 0U;
 
 static void refreshFramebufferState(void) {
     if (g_framebuffer.base != 0U)
@@ -106,7 +108,8 @@ static void refreshFramebufferState(void) {
     uint8_t bpp = g_vbe_mode_info.bpp;
     uint32_t base = g_vbe_mode_info.framebuffer;
 
-    if (base == 0U || width == 0U || height == 0U || pitch == 0U || bpp == 0U) {
+    if ((g_vbe_mode_info.attributes & 0x0080U) == 0U || base == 0U ||
+        width == 0U || height == 0U || pitch == 0U || bpp == 0U) {
         if (configureQemuLinearFramebuffer())
             return;
 
@@ -127,6 +130,39 @@ static void refreshFramebufferState(void) {
     g_framebuffer.bpp = bpp;
 }
 
+uint32_t vesaGetWidth(void) {
+    refreshFramebufferState();
+    return g_framebuffer.width;
+}
+
+uint32_t vesaGetHeight(void) {
+    refreshFramebufferState();
+    return g_framebuffer.height;
+}
+
+void vesaFlush(uint32_t x, uint32_t y, uint32_t width, uint32_t height, const uint32_t *pixels) {
+    refreshFramebufferState();
+    if (pixels == 0 || x >= g_framebuffer.width || y >= g_framebuffer.height)
+        return;
+
+    if (width > g_framebuffer.width - x)
+        width = g_framebuffer.width - x;
+    if (height > g_framebuffer.height - y)
+        height = g_framebuffer.height - y;
+
+    if (g_framebuffer.bpp != 32U)
+        return;
+
+    volatile uint32_t *framebuffer = (volatile uint32_t *)(uintptr_t)g_framebuffer.base;
+    uint32_t pitch_pixels = g_framebuffer.pitch / sizeof(uint32_t);
+    for (uint32_t row = 0; row < height; ++row) {
+        uint32_t destination = (y + row) * pitch_pixels + x;
+        uint32_t source = row * width;
+        for (uint32_t column = 0; column < width; ++column)
+            framebuffer[destination + column] = pixels[source + column];
+    }
+}
+
 struct VbeInfoBlock getExtensionInfo() {
     if(vbeIsInited == 1)
         return g_vbe_info;
@@ -141,9 +177,6 @@ void drawFramebuffer(int x, int y, uint64_t color) {
     uint32_t pixel_color;
 
     if (x < 0 || y < 0)
-        return;
-
-    if ((uint32_t)x == 0U || (uint32_t)y == 0U)
         return;
 
     refreshFramebufferState();

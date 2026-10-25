@@ -4,21 +4,15 @@
 .code16
 
 _start:
-    lea si, [LDSuccess]
-    call print
-    
     cli                     # Disable interrupts during setup
     xor ax, ax
     mov ds, ax              # Data segment = 0
     mov es, ax              # Extra segment = 0
     mov ss, ax              # Stack segment = 0
-    mov sp, 0x0500          # Stack grows downward
+    mov sp, 0x7C00          # Stack grows below the boot sector
     cld                     # String instructions go forward
-    sti                     # Re-enable interrupts
     mov [bootdrive], dl     # Save boot drive index
-
-    lea si, [LDSuccess]
-    call print
+    sti                     # Re-enable interrupts
 
     # Enable A20 Line via Fast A20 Gate
     in al, 0x92
@@ -27,44 +21,66 @@ _start:
 
     # Try EDD Extensions (LBA) first
     mov dl, [bootdrive]
-    mov ah, 0x41 	        # "check extensions present" service
+    mov ah, 0x41            # "check extensions present" service
     mov bx, 0x55aa
     int 0x13
-    jnc edd_ok
+    jc try_chs
     cmp bx, 0xaa55
     jne try_chs
-    test cx, 1		        # Check support for the "fixed disk access subset"
+    test cx, 1               # Check support for the "fixed disk access subset"
     jz try_chs
 
 edd_ok:
-    # Read from disk using standard EDD DAP (within 1MB)
+    # Read 960 sectors in fifteen EDD transfers; each transfer is 32 KB.
+    # The linked LVGL font data makes the second-stage loader exceed 896 sectors.
+    mov byte ptr [read_chunks], 15
+read_chunk:
     mov dl, [bootdrive]
+    mov word ptr [dap + 2], 64   # BIOS may update the transferred-sector count.
     lea si, [dap]           # DS:SI points to the packet
     mov ah, 0x42            # Extended Read
     int 0x13
-    jnc read_ok             # Carry flag clear means success
-    jmp diskerr
+    jc try_chs
+    add word ptr [dap + 6], 0x0800  # Advance destination by 32 KB.
+    add word ptr [dap + 8], 64      # Advance LBA by 64 sectors.
+    dec byte ptr [read_chunks]
+    jnz read_chunk
+    jmp read_ok
 
 try_chs:
-    mov dl, [bootdrive]
-    
-    # FIX: Point ES:BX to 0x07e0:0x0000 instead of 0x0000:0x7E00
-    mov ax, 0x07e0          
+    # BIOS CD boot emulation may not offer EDD. Read all 960 sectors with
+    # one-sector CHS requests using the standard 1.44 MB floppy geometry.
+    mov word ptr [chs_lba], 1
+    mov word ptr [chs_left], 960
+    mov word ptr [chs_segment], 0x07e0
+chs_read:
+    mov ax, word ptr [chs_lba]
+    xor dx, dx
+    mov cx, 18
+    div cx                  # AX=track, DX=sector index (18 sectors/track)
+    inc dl
+    mov byte ptr [chs_sector], dl
+    xor dx, dx
+    mov cx, 2
+    div cx                  # AX=cylinder, DX=head (2 heads/cylinder)
+    mov ch, al
+    mov dh, dl
+    mov cl, byte ptr [chs_sector]
+    mov ax, word ptr [chs_segment]
     mov es, ax
-    mov bx, 0x0000          
-    
-    mov ah, 0x02            # Read sectors function
-    mov al, 64              # Number of sectors to read (32 KB)
-    mov ch, 0               # Cylinder 0
-    mov cl, 1               # Sector 1 (FIXED: was 2, loader.bin starts at sector 1)
-    mov dh, 0               # Head 0
+    xor bx, bx
+    mov dl, byte ptr [bootdrive]
+    mov ax, 0x0201           # Read one sector
     int 0x13
     jc diskerr
+    inc word ptr [chs_lba]
+    add word ptr [chs_segment], 0x20
+    dec word ptr [chs_left]
+    jnz chs_read
+    jmp read_ok
 
 read_ok:
-    lea si, [BTSuccess]
-    call print
-    # Jump to second stage (Physical Address: 0x7E00)
+    # Enter stage two; it prints its own success message at its entry point.
     mov dl, [bootdrive]
     jmp 0x0000:0x7E00
 
@@ -106,12 +122,16 @@ incapMSG:
 
 bootdrive:
     .byte 0
-
-BTSuccess:
-    .asciz "Bootloader Swapped\r\n"
-
-LDSuccess:
-    .asciz "_start\r\n"
+read_chunks:
+    .byte 0
+chs_lba:
+    .word 0
+chs_left:
+    .word 0
+chs_segment:
+    .word 0
+chs_sector:
+    .byte 0
 
 .align 4
 dap:
