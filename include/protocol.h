@@ -1,7 +1,15 @@
+/*
+ * Part Public License (PPL)
+ * Copyright (C) 2026 Abdullah Al Nahian/Raiyan
+ * View LICENSE.md
+ */
+
 #ifndef BOOT_PROTOCOL_H
 #define BOOT_PROTOCOL_H
 #include <stdint.h>
+#include <Uefi.h>
 
+#ifndef __ASSEMBLER__
 typedef enum VbeMode {
     /* --- 8-bit Color Depth (256 Colors / Indexed Palette) --- */
     VBE_MODE_640x400x256        = 0x100,
@@ -95,4 +103,97 @@ struct vbe_mode_info_structure {
 	uint8_t reserved1[206];
 } __attribute__ ((packed));
 
+typedef struct {
+    uint64_t base;
+    unsigned long long size;
+} PartitionRegion;
+
+typedef struct __attribute__((packed)) {
+    char signature[12];
+    uint64_t base;          // Offset 12, size 8
+    uint64_t region;        // Offset 20, size 8
+    uint32_t type;          // Offset 28, size 4
+    uint32_t eattributes;   // Offset 32, size 4 (optional/reserved)
+} CommonMemoryEntry;
+
+typedef enum {
+    MREGION_USEABLE             = 1,
+    MREGION_RESERVED            = 2,
+    MREGION_APCI_USEABLE        = 3,
+    MREGION_ACPI_NVS            = 4,
+    MREGION_BAD                 = 5,
+    MREGION_LOADER_RSV          = 6
+} MMAPType;
+#endif // __ASSEMBLER__
+
+#define SYSCALL_NDISK_READ            0x00000001
+#define SYSCALL_NDISK_WRITE           0x00000002
+#define SYSCALL_REGISTER_PSTYLE       0x00000003
+#define SYSCALL_GET_PARTITIONS_COUNT  0x00000004
+#define SYSCALL_GET_PARTITION_ADDRESS 0x00000005
+#define SYSCALL_CREATE_PR_PARTITION   0x00000006
+#define SYSCALL_RESIZE_PR_PARTITION   0x00000007
+#define SYSCALL_DELETE_PR_PARTITION   0x00000008
+#define SYSCALL_GET_MEMORY_MAP        0x00000009
+#define SYSCALL_SET_VBE_MODE          0x0000000C
+#define SYSCALL_CALL16                0x0000000E
+#define SYSCALL_CALL32                0x0000000F
+#define SYSCALL_LIALLOCATE_MEMORY     0x00000010
+#define SYSCALL_LIREALLOCATE_MEMORY   0x00000011
+#define SYSCALL_LIFREE_MEMORY         0x00000012
+#define SYSCALL_LIRESERVE_MEMORY      0x00000013
+#define SYSCALL_LIUNRESERVE_MEMORY    0x00000014
+#define SYSCALL_SERIAL_WRITE          0x00000015
+#define SYSCALL_SERIAL_READ           0x00000016
+#define SYSCALL_SERIAL_READB          0x00000017
+#define SYSCALL_NACPI_POWER_OFF       0x00000018
+#define SYSCALL_NACPI_REBOOT          0x00000019
+
+#ifndef __ASSEMBLER__
+typedef enum {
+    NDISK_READ                  = SYSCALL_NDISK_READ,
+    NDISK_WRITE                 = SYSCALL_NDISK_WRITE,
+    REGISTER_PSTYLE             = SYSCALL_REGISTER_PSTYLE,
+    GET_PARTITIONS_COUNT        = SYSCALL_GET_PARTITIONS_COUNT,
+    GET_PARTITION_ADDRESS       = SYSCALL_GET_PARTITION_ADDRESS,
+    CREATE_PR_PARTITION         = SYSCALL_CREATE_PR_PARTITION,
+    RESIZE_PR_PARTITION         = SYSCALL_RESIZE_PR_PARTITION,
+    DELETE_PR_PARTITION         = SYSCALL_DELETE_PR_PARTITION,
+    GET_MEMORY_MAP              = SYSCALL_GET_MEMORY_MAP,
+    SET_VBE_MODE                = SYSCALL_SET_VBE_MODE,
+    CALL16                      = SYSCALL_CALL16,
+    CALL32                      = SYSCALL_CALL32,
+    LIALLOCATE_MEMORY           = SYSCALL_LIALLOCATE_MEMORY,
+    LIREALLOCATE_MEMORY         = SYSCALL_LIREALLOCATE_MEMORY,
+    LIFREE_MEMORY               = SYSCALL_LIFREE_MEMORY,
+    LIRESERVE_MEMORY            = SYSCALL_LIRESERVE_MEMORY,
+    LIUNRESERVE_MEMORY          = SYSCALL_LIUNRESERVE_MEMORY,
+    SERIAL_WRITE                = SYSCALL_SERIAL_WRITE,
+    SERIAL_READ                 = SYSCALL_SERIAL_READ,
+    SERIAL_READB                = SYSCALL_SERIAL_READB,
+    NACPI_POWER_OFF             = SYSCALL_NACPI_POWER_OFF,
+    NACPI_REBOOT                = SYSCALL_NACPI_REBOOT
+} SyscallCode;
+
+typedef enum {
+    BIOS = 0,
+    UEFI = 1
+} RunningFirmware;
+
+/*
+ * Don't Confuse With EFI Boot Protocol
+ * This Boot Protocol Is Created For Functions Reuse,
+ * Instead Of Abandoning 60-70% Bootloader's Functions.
+ */
+typedef struct __attribute__((packed)) {
+    void* handleSyscall;
+    VbeInfoBlock* vbeInfo;
+    struct vbe_mode_info_structure* vbeModeInfo;
+    VbeMode currentMode;
+    RunningFirmware firmware;
+    EFI_HANDLE ImageHandle;
+    EFI_SYSTEM_TABLE *SystemTable;
+} EBootProtocol;
+
+#endif // __ASSEMBLER__
 #endif // BOOT_PROTOCOL_H

@@ -1,3 +1,7 @@
+# Part Public License (PPL)
+# Copyright (C) 2026 Abdullah Al Nahian/Raiyan
+# View LICENSE.md
+
 .intel_syntax noprefix
 .section .text
 .global _start
@@ -13,6 +17,10 @@ _start:
     cld                     # String instructions go forward
     mov [bootdrive], dl     # Save boot drive index
     sti                     # Re-enable interrupts
+
+    # No-emulation El Torito loads the complete boot image before entry.
+    cmp byte ptr [bootdrive], 0xE0
+    je read_ok
 
     # Enable A20 Line via Fast A20 Gate
     in al, 0x92
@@ -31,9 +39,9 @@ _start:
     jz try_chs
 
 edd_ok:
-    # Read 960 sectors in fifteen EDD transfers; each transfer is 32 KB.
-    # The linked LVGL font data makes the second-stage loader exceed 896 sectors.
-    mov byte ptr [read_chunks], 15
+    # Read 1024 sectors in sixteen EDD transfers; each transfer is 32 KB.
+    # The stage-two loader and its linked UI data exceed 960 sectors.
+    mov byte ptr [read_chunks], 16
 read_chunk:
     mov dl, [bootdrive]
     mov word ptr [dap + 2], 64   # BIOS may update the transferred-sector count.
@@ -51,7 +59,7 @@ try_chs:
     # BIOS CD boot emulation may not offer EDD. Read all 960 sectors with
     # one-sector CHS requests using the standard 1.44 MB floppy geometry.
     mov word ptr [chs_lba], 1
-    mov word ptr [chs_left], 960
+    mov word ptr [chs_left], 1024
     mov word ptr [chs_segment], 0x07e0
 chs_read:
     mov ax, word ptr [chs_lba]
@@ -80,6 +88,9 @@ chs_read:
     jmp read_ok
 
 read_ok:
+    lea si, [swapMSG]
+    call print
+    
     # Enter stage two; it prints its own success message at its entry point.
     mov dl, [bootdrive]
     jmp 0x0000:0x7E00
@@ -98,8 +109,10 @@ print_done:
     ret
 
 die:
+    sti
+dieLoop:
     hlt
-    jmp die
+    jmp dieLoop
 
 diskerr:
     lea si, [dskerrMSG]
@@ -119,6 +132,9 @@ dskerrMSG:
 
 incapMSG:
     .asciz "Not Supported."
+
+swapMSG:
+    .asciz "Launching..."
 
 bootdrive:
     .byte 0

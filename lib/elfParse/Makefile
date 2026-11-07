@@ -1,0 +1,1 @@
+OBJ += $(CURDIR)/lib/elfParse/elfparse.o

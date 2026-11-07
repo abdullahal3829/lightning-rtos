@@ -1,5 +1,11 @@
-#ifndef BOOT_MOUSE_H
-#define BOOT_MOUSE_H
+/*
+ * Part Public License (PPL)
+ * Copyright (C) 2026 Abdullah Al Nahian/Raiyan
+ * View LICENSE.md
+ */
+
+#ifndef MOUSE_H
+#define MOUSE_H
 
 #include <stdint.h>
 
@@ -16,4 +22,4 @@ void mouse_poll(void);
 void mouse_set_bounds(uint32_t width, uint32_t height);
 void mouse_get_state(MouseState *state);
 
-#endif
+#endif // MOUSE_H

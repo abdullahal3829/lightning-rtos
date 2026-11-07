@@ -1,3 +1,9 @@
+/*
+ * Part Public License (PPL)
+ * Copyright (C) 2026 Abdullah Al Nahian/Raiyan
+ * View LICENSE.md
+ */
+
 #include "keyboard.h"
 
 extern uint8_t inb(uint16_t port);
@@ -170,6 +176,7 @@ static void processScancode(uint8_t value) {
 
     uint8_t ascii = extended ? 0U : translateAscii(scancode, left_shift | right_shift);
     if (ascii != 0U || extended || scancode == 0x01U || scancode == 0x1CU ||
+        scancode == 0x1DU || scancode == 0x38U ||
         scancode == 0x0FU || scancode == 0x39U)
         enqueueEvent(scancode, extended, pressed, ascii);
 }

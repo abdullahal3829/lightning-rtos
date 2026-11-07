@@ -1,3 +1,9 @@
+/*
+ * Part Public License (PPL)
+ * Copyright (C) 2026 Abdullah Al Nahian/Raiyan
+ * View LICENSE.md
+ */
+
 #include "mouse.h"
 
 extern uint8_t inb(uint16_t port);

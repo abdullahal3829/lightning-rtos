@@ -1,5 +1,11 @@
-#ifndef BOOT_KEYBOARD_H
-#define BOOT_KEYBOARD_H
+/*
+ * Part Public License (PPL)
+ * Copyright (C) 2026 Abdullah Al Nahian/Raiyan
+ * View LICENSE.md
+ */
+
+#ifndef KEYBOARD_H
+#define KEYBOARD_H
 
 #include <stdint.h>
 
@@ -16,4 +22,4 @@ void keyboard_poll(void);
 int keyboard_read_event(KeyboardEvent *event);
 int keyboard_event_pending(void);
 
-#endif
+#endif // KEYBOARD_H

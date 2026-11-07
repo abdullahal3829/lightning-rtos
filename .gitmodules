@@ -5,3 +5,6 @@
 [submodule "tools/Kconfiglib"]
 	path = tools/Kconfiglib
 	url = https://github.com/zephyrproject-rtos/Kconfiglib.git
+[submodule "tools/edk2"]
+	path = tools/edk2
+	url = https://github.com/tianocore/edk2.git
