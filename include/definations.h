@@ -66,6 +66,7 @@
 #define SYSTEM_CODE_INVALID_BINARY                  0x40  // Invalid Binary
 #define SYSTEM_CODE_ERROR_NOT_FOUND                 0x41  // Not Found
 #define SYSTEM_CODE_ERROR_NOT_LOADED                0x42  // Not Loaded
+#define SYSTEM_CODE_ERROR_INVALID_BLOCK             0x43  // Invalid Block
 
 #ifndef __ASSEMBLER__
 typedef enum {
@@ -78,6 +79,16 @@ typedef enum {
 extern EBootProtocol bprotocol;
 extern RunningFirmware firmware;
 #endif // __ASSEMBLER__
+
+#define IS_UEFI() (firmware == UEFI)
+#define IS_BIOS() (firmware == BIOS)
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+extern uint8_t inb(uint16_t port);
+extern void outb(uint16_t port, uint8_t value);
+#else
+#error "Kernel Doesn't Support Compilation For This Architecture"
+#endif
 
 #ifndef BOOTLDR_BUILD
 extern void INFO(char* message, MESSAGE_TYPE type);

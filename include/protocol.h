@@ -7,7 +7,21 @@
 #ifndef BOOT_PROTOCOL_H
 #define BOOT_PROTOCOL_H
 #include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
 #include <Uefi.h>
+#include <Protocol/GraphicsOutput.h>
+#else
+#define BIOS_BUILD 1
+#ifndef __ASSEMBLER__
+typedef void *EFI_HANDLE;
+typedef struct EFI_SYSTEM_TABLE EFI_SYSTEM_TABLE;
+typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL EFI_GRAPHICS_OUTPUT_PROTOCOL;
+typedef struct EFI_GRAPHICS_OUTPUT_MODE_INFORMATION EFI_GRAPHICS_OUTPUT_MODE_INFORMATION;
+#endif
+#endif
 
 #ifndef __ASSEMBLER__
 typedef enum VbeMode {
@@ -135,9 +149,10 @@ typedef enum {
 #define SYSCALL_RESIZE_PR_PARTITION   0x00000007
 #define SYSCALL_DELETE_PR_PARTITION   0x00000008
 #define SYSCALL_GET_MEMORY_MAP        0x00000009
+#define SYSCALL_SET_MAX_RESULATION    0x0000000A
 #define SYSCALL_SET_VBE_MODE          0x0000000C
+#define SYSCALL_CALL32                0x0000000D
 #define SYSCALL_CALL16                0x0000000E
-#define SYSCALL_CALL32                0x0000000F
 #define SYSCALL_LIALLOCATE_MEMORY     0x00000010
 #define SYSCALL_LIREALLOCATE_MEMORY   0x00000011
 #define SYSCALL_LIFREE_MEMORY         0x00000012
@@ -181,18 +196,29 @@ typedef enum {
 } RunningFirmware;
 
 /*
- * Don't Confuse With EFI Boot Protocol
- * This Boot Protocol Is Created For Functions Reuse,
+ * Don't Confuse With EFI Boot Protocol It Is Extended Reuseable
+ * Boot Protocol But It Created For Functions Reuse,
  * Instead Of Abandoning 60-70% Bootloader's Functions.
  */
 typedef struct __attribute__((packed)) {
     void* handleSyscall;
     VbeInfoBlock* vbeInfo;
+#if !defined(EFI_BUILD)
     struct vbe_mode_info_structure* vbeModeInfo;
     VbeMode currentMode;
+#else
+    char* padding[sizeof(struct vbe_mode_info_structure) + sizeof(VbeMode)];
+#endif
     RunningFirmware firmware;
+#if defined(EFI_BUILD)
     EFI_HANDLE ImageHandle;
     EFI_SYSTEM_TABLE *SystemTable;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *Info;
+    unsigned int SizeOfInfo;
+    uint32_t TargetMode;
+    bool ModeFound;
+#endif
 } EBootProtocol;
 
 #endif // __ASSEMBLER__

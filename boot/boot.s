@@ -18,14 +18,14 @@ _start:
     mov [bootdrive], dl     # Save boot drive index
     sti                     # Re-enable interrupts
 
-    # No-emulation El Torito loads the complete boot image before entry.
-    cmp byte ptr [bootdrive], 0xE0
-    je read_ok
-
-    # Enable A20 Line via Fast A20 Gate
+    # Enable A20 before either optical or hard-disk boot.
     in al, 0x92
     or al, 2
     out 0x92, al
+
+    # No-emulation El Torito loads the complete boot image before entry.
+    cmp byte ptr [bootdrive], 0xE0
+    je read_ok
 
     # Try EDD Extensions (LBA) first
     mov dl, [bootdrive]

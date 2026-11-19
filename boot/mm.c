@@ -10,6 +10,17 @@
 #include <varutil.h>
 #include "mm.h"
 
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+#include <Uefi.h>
+
+extern EFI_BOOT_SERVICES *gBS;
+#endif
+
+#if !defined(EFI_BUILD) && !defined(UEFI_BUILD)
+/* -----------------------------------------------------------------------
+ * BIOS path: E820 memory-map based allocation via MMAP_BASE table
+ * --------------------------------------------------------------------- */
+
 enum {
     MMAP_BASE = 0x0500,
     MMAP_END = 0x7C00,
@@ -25,7 +36,7 @@ CommonMemoryEntry getRegion(int index) {
 
     const volatile CommonMemoryEntry *entries =
         (const volatile CommonMemoryEntry *)(uintptr_t)MMAP_BASE;
-    
+
     static const char signature[] = "BTLDRREGION";
     for (uint32_t i = 0; i < sizeof(signature); ++i) {
         if (entries[index].signature[i] != signature[i]) {
@@ -97,14 +108,48 @@ static int reserveRegion(uint64_t base, uint64_t size) {
     }
     return 0;
 }
+#endif /* !defined(EFI_BUILD) && !defined(UEFI_BUILD) */
+
+/* -----------------------------------------------------------------------
+ * Shared across BIOS and UEFI
+ * --------------------------------------------------------------------- */
 
 void* fallocAt(uint64_t base, size_t size) {
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+    EFI_STATUS status;
+    EFI_PHYSICAL_ADDRESS address = (EFI_PHYSICAL_ADDRESS)base;
+    UINTN pages;
+
+    if (size == 0U)
+        return (void *)0;
+
+    pages = (size + 0xFFFULL) / 0x1000ULL;
+    status = gBS->AllocatePages(AllocateAddress, EfiLoaderData, pages, &address);
+    if (EFI_ERROR(status))
+        return (void *)0;
+
+    return (void *)(uintptr_t)address;
+#else
     if (!reserveRegion(base, (uint64_t)size))
         return (void *)0;
     return (void *)(uintptr_t)base;
+#endif
 }
 
 void* falloc(size_t size) {
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+    EFI_STATUS status;
+    VOID *buffer = NULL;
+
+    if (size == 0U)
+        return (void *)0;
+
+    status = gBS->AllocatePool(EfiLoaderData, size, &buffer);
+    if (EFI_ERROR(status))
+        return (void *)0;
+
+    return buffer;
+#else
     const uint64_t address_limit = 0x100000000ULL;
     const uint64_t minimum_address = 0x100000ULL;
     uint64_t aligned_size;
@@ -126,6 +171,7 @@ void* falloc(size_t size) {
             return (void *)(uintptr_t)base;
     }
     return (void *)0;
+#endif
 }
 
 uintptr_t allocateLoaderStackTop(void) {
@@ -135,6 +181,10 @@ uintptr_t allocateLoaderStackTop(void) {
         return 0U;
     return (uintptr_t)stack + stackSize;
 }
+
+/* -----------------------------------------------------------------------
+ * Vector helpers (shared, no firmware dependence)
+ * --------------------------------------------------------------------- */
 
 void vectorInit(vector *var) {
     if (var == NULL)
@@ -183,6 +233,13 @@ void *vectorAt(vector *var, unsigned int index) {
 }
 
 void* frealloc(void* addr, size_t size) {
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+    /* UEFI pool allocations are not individually resizable via AllocatePool.
+     * Return NULL so callers fall back to allocate + copy + free. */
+    (void)addr;
+    (void)size;
+    return (void *)0;
+#else
     if (size == 0)
         goto freallocEnd;
 
@@ -190,7 +247,7 @@ void* frealloc(void* addr, size_t size) {
         CommonMemoryEntry mentry = getRegion(i);
         if (mentry.base == (uint64_t)(uintptr_t)addr) {
             CommonMemoryEntry mnxtEntry = getRegion((int)i + 1);
-            //if ((mentry.region + mnxtEntry.region) >
+            /*if ((mentry.region + mnxtEntry.region) >*/
             mentry.region = size;
             mnxtEntry.base -= size;
             uintptr_t baddr = MMAP_BASE;
@@ -199,7 +256,7 @@ void* frealloc(void* addr, size_t size) {
                 PANIC("Security Violation: Buffer Overflown While Allocating Memory.");
                 goto freallocEnd;
             }
-            
+
             volatile CommonMemoryEntry *entries =
                 (volatile CommonMemoryEntry *)(uintptr_t)baddr;
             if (i + 1 >= getRegionCount())
@@ -215,4 +272,5 @@ void* frealloc(void* addr, size_t size) {
     }
 freallocEnd:
     return (void*)0;
+#endif
 }

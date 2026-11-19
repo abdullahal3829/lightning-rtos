@@ -1,0 +1,1 @@
+OBJ += asm/$(TARCH)/gpioutil.a asm/$(TARCH)/pit.a

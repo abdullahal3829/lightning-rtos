@@ -4,10 +4,18 @@
  * View LICENSE.md
  */
 
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+#include <Uefi.h>
+#include <Library/UefiLib.h>
+#include <Protocol/SerialIo.h>
+#include <Protocol/SimpleFileSystem.h>
+#include <Guid/FileInfo.h>
+#endif
+
 #include "vesa.h"
-#include "lvgl.h"
 #include "drivers/keyboard.h"
 #include "drivers/mouse.h"
+#include "lvgl.h"
 #include "fs/toritofs.h"
 #include "kloader/kloader.h"
 #include "mm.h"
@@ -16,10 +24,17 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#if !defined(EFI_BUILD) && !defined(UEFI_BUILD)
 extern uint8_t inb(uint16_t port);
 extern void outb(uint16_t port, uint8_t value);
-extern void die();
 extern uint8_t bootdrive;
+extern int call16(void *address, void *args, size_t size);
+extern uint8_t printTL16[];
+extern uint8_t setTextMode16[];
+extern void NDiskRead(void);
+#endif
+
+extern void die(void);
 extern void prepareLongMode(uint64_t entryPoint, uintptr_t stackTop,
                             const void *bootProtocol);
 extern uint32_t handleSyscall64(uint32_t syscallCode, uint64_t args,
@@ -31,18 +46,55 @@ bool ancientTheme = false;
  * .lowdata section keeps it out of the BSS range that lmain() clears. */
 bool headlessMode __attribute__((section(".lowdata"))) = false;
 
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+extern EFI_SYSTEM_TABLE *gST;
+extern EFI_HANDLE gImageHandle;
+static EFI_SERIAL_IO_PROTOCOL *g_serial_io = NULL;
+#endif
+
+void PSerialRead(char *buffer, uint64_t length) {
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+    UINTN n = (UINTN)length;
+    if (g_serial_io == NULL || buffer == NULL)
+        return;
+    g_serial_io->Read(g_serial_io, &n, buffer);
+#endif
+}
+
+uint8_t PSerialReadB(void) {
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+    UINTN n = 1;
+    uint8_t ch = 0;
+    if (g_serial_io == NULL)
+        return 0;
+    if (g_serial_io->Read(g_serial_io, &n, &ch) == EFI_SUCCESS && n == 1U)
+        return ch;
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+#ifndef UEFI_BUILD
 extern int call16(void *address, void *args, size_t size);
 extern uint8_t printTL16[];
 extern uint8_t setTextMode16[];
+#endif
 void PSerialWrite(const char *str);
 static void loadKernelBootEntry(void);
 
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+static void printTL(const char *text) {
+    Print(L"%a", text);
+}
+#else
 static void printTL(const char *text) {
     size_t length = 0;
     while (text[length] != '\0')
         ++length;
     (void)call16((void *)printTL16, (void *)text, length + 1U);
 }
+#endif
 
 static void debugInvalidationState(const char *stage, lv_display_t *display) {
     PSerialWrite(stage);
@@ -61,6 +113,7 @@ enum {
     UART_TX_READY = 0x20,
 };
 
+#if !defined(EFI_BUILD) && !defined(UEFI_BUILD)
 static uint16_t serialPortAt(uint32_t index) {
     volatile uint16_t *ports = (volatile uint16_t *)(uintptr_t)SERIAL_PORT_TABLE;
     return ports[index];
@@ -82,20 +135,21 @@ static int waitForTransmitReady(uint16_t port) {
 }
 
 static void serialInit(void) {
-    for (uint32_t i = 0; i < SERIAL_PORT_COUNT; ++i) {
-        uint16_t port = serialPortAt(i);
-        if (!serialPortPresent(port))
-            continue;
-
-        /* Configure each BIOS-reported 16550 UART for 115200 8N1. */
-        outb(port + UART_INTERRUPT_ENABLE, 0x00);
-        outb(port + UART_LINE_CONTROL, 0x80); /* Enable divisor latch. */
-        outb(port + UART_DATA, 0x01);         /* Divisor low byte. */
-        outb(port + UART_INTERRUPT_ENABLE, 0x00);
-        outb(port + UART_LINE_CONTROL, 0x03); /* 8 data bits, no parity, 1 stop. */
-        outb(port + UART_FIFO_CONTROL, 0xC7);
-        outb(port + 4, 0x0B);                /* DTR, RTS, and OUT2. */
-    }
+    /* Configure COM1 (0x3F8) unconditionally.  The BIOS data area may not
+     * report the UART as present until after a BIOS disk call (int 0x13) has
+     * been made, so we cannot rely on serialPortPresent() here.  Configure
+     * the port directly; PSerialWrite() will check serialPortPresent() on
+     * each write. */
+    uint16_t port = 0x3F8;
+    outb(port + UART_INTERRUPT_ENABLE, 0x00);
+    outb(port + UART_LINE_CONTROL, 0x80); /* Enable divisor latch. */
+    outb(port + UART_DATA, 0x01);         /* Divisor low byte (115200 baud). */
+    outb(port + UART_INTERRUPT_ENABLE, 0x00);
+    outb(port + UART_LINE_CONTROL, 0x03); /* 8 data bits, no parity, 1 stop. */
+    outb(port + UART_FIFO_CONTROL, 0xC7);
+    outb(port + 4, 0x0B);                /* DTR, RTS, and OUT2. */
+    /* Record COM1 in the BIOS Data Area so PSerialWrite() can discover it. */
+    *(volatile uint16_t *)(uintptr_t)0x0400 = port;
 }
 
 void PSerialWrite(const char *str) {
@@ -112,6 +166,32 @@ void PSerialWrite(const char *str) {
         }
     }
 }
+#else
+static void serialInit(void) {
+    /* OVMF/QEMU does not reliably expose a working SerialIo protocol under
+     * -nographic -serial.  The kernel initializes COM1 port I/O on its own,
+     * so the bootloader does not need firmware serial services.  Leave
+     * g_serial_io NULL so PSerialWrite() is a safe no-op. */
+    g_serial_io = NULL;
+}
+
+void PSerialWrite(const char *str) {
+    UINTN length;
+    const char *current;
+
+    if (g_serial_io == NULL || str == NULL)
+        return;
+
+    length = 0;
+    current = str;
+    while (*current != '\0') {
+        ++length;
+        ++current;
+    }
+
+    g_serial_io->Write(g_serial_io, &length, (void *)str);
+}
+#endif
 
 void PSerialWriteHex(uint16_t value) {
     static const char digits[] = "0123456789ABCDEF";
@@ -130,10 +210,12 @@ void PSerialWriteHex(uint16_t value) {
 
 extern uint8_t __bss_start[];
 extern uint8_t __bss_end[];
+#ifndef UEFI_BUILD
 extern VbeInfoBlock g_vbe_info;
 extern struct vbe_mode_info_structure g_vbe_mode_info;
 extern int vbeIsInited;
 extern uint16_t curVBEMode;
+#endif
 
 static uint32_t lvgl_draw_buffer[800U * 24U];
 static bool cursor_visible;
@@ -171,14 +253,21 @@ static void handleKeyboardHotkey(const KeyboardEvent *event) {
 #endif
 }
 
+#if !defined(EFI_BUILD) && !defined(UEFI_BUILD)
 static uint16_t readPitCounter(void) {
     outb(0x43U, 0x00U); /* Latch channel 0's current countdown value. */
     uint8_t low = inb(0x40U);
     uint8_t high = inb(0x40U);
     return (uint16_t)(((uint16_t)high << 8) | low);
 }
+#else
+static uint16_t readPitCounter(void) {
+    return 0U;
+}
+#endif
 
 static uint32_t keyboardEventToLvglKey(const KeyboardEvent *event) {
+#ifndef UEFI_BUILD
     if (event->extended) {
         switch (event->scancode) {
             case 0x48: return LV_KEY_PREV;
@@ -199,6 +288,9 @@ static uint32_t keyboardEventToLvglKey(const KeyboardEvent *event) {
         case 0x1C: return LV_KEY_ENTER;
         default: return event->ascii;
     }
+#else
+    // Implement Returning Keycode For UEFI When Press Key
+#endif
 }
 
 static void keyboardRead(lv_indev_t *indev, lv_indev_data_t *data) {
@@ -243,6 +335,7 @@ static void mouseRead(lv_indev_t *indev, lv_indev_data_t *data) {
     data->state = (state.buttons & 0x01U) ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
 
+#if !defined(EFI_BUILD) && !defined(UEFI_BUILD)
 static void clearBssAndPreserveVideoState(void) {
     VbeInfoBlock saved_info;
     uint8_t *saved_bytes = (uint8_t *)&saved_info;
@@ -261,6 +354,12 @@ static void clearBssAndPreserveVideoState(void) {
     vbeIsInited = saved_vbe_state;
     curVBEMode = saved_mode;
 }
+#else
+static void clearBssAndPreserveVideoState(void) {
+    for (uint8_t *byte = __bss_start; byte < __bss_end; ++byte)
+        *byte = 0;
+}
+#endif
 
 static void flushDisplay(lv_display_t *display, const lv_area_t *area, uint8_t *pixels) {
     static bool flush_logged;
@@ -270,7 +369,9 @@ static void flushDisplay(lv_display_t *display, const lv_area_t *area, uint8_t *
         flush_logged = true;
         PSerialWrite("Framebuffer flush callback reached.\r\n");
     }
+#ifndef UEFI_BUILD
     vesaFlush((uint32_t)area->x1, (uint32_t)area->y1, width, height, (const uint32_t *)pixels);
+#endif
     lv_display_flush_ready(display);
 }
 
@@ -301,7 +402,15 @@ static lv_obj_t *makeLabel(lv_obj_t *parent, const char *text, int x, int y,
 }
 
 static lv_obj_t *selectedBootEntry;
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+typedef struct {
+    EFI_FILE_PROTOCOL *file;
+    UINT64 size;
+} UefiFileContext;
 
+static int uefiReadFile(void *context, uint64_t offset, void *buffer, size_t size);
+static int uefiOpenFile(const char *path, UefiFileContext *ufc);
+#endif
 static void loadKernelBootEntry(void) {
     ToritoFile source;
     KernelFile kernel = {
@@ -310,11 +419,148 @@ static void loadKernelBootEntry(void) {
         .size = 0U
     };
     KernelImage image;
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+    UefiFileContext ufc = {NULL, 0};
+#endif
     PSerialWrite("Loading boot entry /oskrnl.\r\n");
     PSerialWrite("Boot drive: ");
+#ifndef UEFI_BUILD
     PSerialWriteHex((uint16_t)bootdrive);
+#endif
     PSerialWrite("\r\n");
+    /* Direct COM1 debug: confirm we reached toritoOpenFile */
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'T'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'O'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'F'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\r'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\n'); break; }
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+    kernel.read = uefiReadFile;
+    kernel.context = &ufc;
+    int result = uefiOpenFile("/oskrnl", &ufc);
+    if (result == SYSTEM_CODE_SUCCESS && ufc.file == NULL)
+        result = SYSTEM_CODE_ERROR_INVALID_HANDLE;
+    if (result == SYSTEM_CODE_SUCCESS)
+        kernel.size = ufc.size;
+#else
     int result = toritoOpenFile(bootdrive, "/oskrnl", &source);
+    /* Direct COM1 debug: show toritoOpenFile result */
+    {
+        char msg[] = "R=";
+        for (uint32_t _t = 0; _t < 2; ++_t)
+            for (uint32_t _w = 0; _w < 100000U; ++_w)
+                if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, msg[_t]); break; }
+        {
+            static const char digits[] = "0123456789ABCDEF";
+            uint32_t v = (uint32_t)result;
+            for (int _n = 3; _n >= 0; --_n) {
+                char c = digits[(v >> (_n * 4)) & 0xF];
+                for (uint32_t _w = 0; _w < 100000U; ++_w)
+                    if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, c); break; }
+            }
+        }
+        for (uint32_t _w = 0; _w < 100000U; ++_w)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\r'); break; }
+        for (uint32_t _w = 0; _w < 100000U; ++_w)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\n'); break; }
+    }
+    if (result == SYSTEM_CODE_SUCCESS)
+        kernel.size = source.size;
+#endif
+    /* Direct COM1 debug: branch on result */
+    if (result == 0U) {
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'O'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'K'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\r'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\n'); break; }
+    } else {
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'F'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'A'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'I'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'L'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\r'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\n'); break; }
+    }
+    /* Test: direct call16(NDiskRead) to read sector 16 (ISO PV descriptor) */
+    {
+        struct NDiskTestParams {
+            uint16_t disk;
+            uint64_t lba;
+            uint16_t buffer_offset;
+            uint16_t buffer_segment;
+        } __attribute__((packed)) params;
+        static uint8_t test_buf[2048] __attribute__((section(".lowdata")));
+
+        params.disk = bootdrive;
+        params.lba = 16;
+        params.buffer_offset = (uint16_t)((uintptr_t)test_buf & 0xFFFF);
+        params.buffer_segment = (uint16_t)((uintptr_t)test_buf >> 4);
+
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'S'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '1'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '6'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\r'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\n'); break; }
+
+        int cres = call16((void *)NDiskRead, &params, sizeof(params));
+
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'R'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '='); break; }
+        {
+            static const char digits[] = "0123456789ABCDEF";
+            uint32_t v = (uint32_t)(uint16_t)cres;
+            for (int _n = 3; _n >= 0; --_n) {
+                char c = digits[(v >> (_n * 4)) & 0xF];
+                for (uint32_t _w = 0; _w < 100000U; ++_w)
+                    if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, c); break; }
+            }
+        }
+        for (uint32_t _w = 0; _w < 100000U; ++_w)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\r'); break; }
+        for (uint32_t _w = 0; _w < 100000U; ++_w)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\n'); break; }
+
+        /* Check first byte of PV descriptor (should be 0x01 = boot record) */
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'F'); break; }
+        for (uint32_t _t = 0; _t < 100000U; ++_t)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'B'); break; }
+        {
+            static const char digits[] = "0123456789ABCDEF";
+            uint32_t v = test_buf[0];
+            for (int _n = 1; _n >= 0; --_n) {
+                char c = digits[(v >> (_n * 4)) & 0xF];
+                for (uint32_t _w = 0; _w < 100000U; ++_w)
+                    if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, c); break; }
+            }
+        }
+        for (uint32_t _w = 0; _w < 100000U; ++_w)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\r'); break; }
+        for (uint32_t _w = 0; _w < 100000U; ++_w)
+            if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\n'); break; }
+    }
     if (result == SYSTEM_CODE_ERROR_FILE_NOT_FOUND) {
         PSerialWrite("Kernel file /oskrnl was not found on the boot media.\r\n");
         PANIC("A Specified File Not Found");
@@ -324,11 +570,36 @@ static void loadKernelBootEntry(void) {
         PSerialWrite("Opening /oskrnl failed with code ");
         PSerialWriteHex((uint16_t)result);
         PSerialWrite("\r\n");
+        /* Spin briefly so the error code is visible before any triple fault. */
+        for (volatile uint32_t _delay = 0; _delay < 20000000U; _delay++)
+            __asm__ volatile ("nop");
         PANIC("Invalid Kernel");
         return;
     }
-    PSerialWrite("Kernel file found; reading ELF image.\r\n");
+    serialInit();
+    /* Direct COM1 debug: confirm we reached loadKernel */
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'K'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'E'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'L'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\r'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\n'); break; }
+    /* Direct COM1 debug: confirm loadKernel is called */
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'G'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, 'O'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\r'); break; }
+    for (uint32_t _t = 0; _t < 100000U; ++_t)
+        if ((inb(0x3FDU) & 0x20U) != 0U) { outb(0x3F8U, '\n'); break; }
+#if !defined(EFI_BUILD) && !defined(UEFI_BUILD)
     kernel.size = source.size;
+#endif
     result = loadKernel(&kernel, &image);
     if (result != 0) {
         PSerialWrite("ELF loader failed with code ");
@@ -343,9 +614,6 @@ static void loadKernelBootEntry(void) {
         return;
     }
 
-    /* This is the packed 64-bit protocol layout consumed by an ELF64 kernel.
-     * The loader itself is compiled as 32-bit, so its native EBootProtocol
-     * pointer fields are only four bytes wide. */
     struct __attribute__((packed)) KernelBootProtocol64 {
         uint64_t handleSyscall;
         uint64_t vbeInfo;
@@ -356,17 +624,111 @@ static void loadKernelBootEntry(void) {
         uint64_t systemTable;
     } protocol = {
         .handleSyscall = (uint64_t)(uintptr_t)handleSyscall64,
+#ifndef UEFI_BUILD
         .vbeInfo = (uint64_t)(uintptr_t)&g_vbe_info,
         .vbeModeInfo = (uint64_t)(uintptr_t)&g_vbe_mode_info,
         .currentMode = (uint32_t)curVBEMode,
-        .firmware = 0U, /* BIOS */
-        .imageHandle = 0U,
-        .systemTable = 0U
+        .firmware = BIOS, /* BIOS */
+#else
+        .firmware = UEFI,
+        .imageHandle = (uint64_t)(uintptr_t)gImageHandle,
+        .systemTable = (uint64_t)(uintptr_t)gST
+#endif
     };
 
     PSerialWrite("ELF64 kernel loaded; entering long mode and calling kernel entry.\r\n");
     prepareLongMode(image.entryPoint, image.stackTop, &protocol);
+    for (;;)
+        __asm__ volatile ("cli; hlt");
 }
+
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+/* -----------------------------------------------------------------------
+ * UEFI file I/O wrapper for kernel loading
+ * --------------------------------------------------------------------- */
+
+static int uefiReadFile(void *context, uint64_t offset, void *buffer, size_t size) {
+    UefiFileContext *ufc = (UefiFileContext *)context;
+    EFI_STATUS status;
+    UINTN readSize = (UINTN)size;
+
+    if (ufc == NULL || ufc->file == NULL || buffer == NULL || size == 0U)
+        return SYSTEM_CODE_ERROR_INVALID_MEMORY_BLOCK;
+
+    status = ufc->file->SetPosition(ufc->file, offset);
+    if (EFI_ERROR(status))
+        return SYSTEM_CODE_ERROR_READ_FAULT;
+
+    status = ufc->file->Read(ufc->file, &readSize, buffer);
+    if (EFI_ERROR(status) || readSize != size)
+        return SYSTEM_CODE_ERROR_READ_FAULT;
+
+    return SYSTEM_CODE_SUCCESS;
+}
+
+static int uefiOpenFile(const char *path, UefiFileContext *ufc) {
+    EFI_STATUS status;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs = NULL;
+    EFI_FILE_PROTOCOL *root = NULL;
+    EFI_FILE_PROTOCOL *file = NULL;
+    EFI_FILE_INFO *info = NULL;
+    UINTN infoSize = 0;
+    CHAR16 uefiPath[128];
+    UINTN i = 0U;
+
+    if (gST == NULL || gST->BootServices == NULL || ufc == NULL || path == NULL)
+        return SYSTEM_CODE_ERROR_INVALID_MEMORY_BLOCK;
+
+    /* Convert ASCII path to CHAR16 for UEFI */
+    while (path[i] != '\0' && i < (sizeof(uefiPath) / sizeof(CHAR16)) - 1U) {
+        uefiPath[i] = (CHAR16)path[i];
+        i++;
+    }
+    uefiPath[i] = (CHAR16)0;
+
+    status = gST->BootServices->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid,
+                                               NULL, (void **)&fs);
+    if (EFI_ERROR(status))
+        return SYSTEM_CODE_ERROR_NOT_FOUND;
+
+    status = fs->OpenVolume(fs, &root);
+    if (EFI_ERROR(status))
+        return SYSTEM_CODE_ERROR_NOT_FOUND;
+
+    status = root->Open(root, &file, uefiPath, EFI_FILE_MODE_READ, 0);
+    if (EFI_ERROR(status)) {
+        root->Close(root);
+        return SYSTEM_CODE_ERROR_FILE_NOT_FOUND;
+    }
+    root->Close(root);
+
+    status = file->GetInfo(file, &gEfiFileInfoGuid, &infoSize, NULL);
+    if (status != EFI_BUFFER_TOO_SMALL) {
+        file->Close(file);
+        return SYSTEM_CODE_ERROR_READ_FAULT;
+    }
+
+    info = NULL;
+    status = gST->BootServices->AllocatePool(EfiLoaderData, infoSize, (void **)&info);
+    if (EFI_ERROR(status)) {
+        file->Close(file);
+        return SYSTEM_CODE_ERROR_OUT_OF_MEMORY;
+    }
+
+    status = file->GetInfo(file, &gEfiFileInfoGuid, &infoSize, info);
+    if (EFI_ERROR(status)) {
+        gST->BootServices->FreePool(info);
+        file->Close(file);
+        return SYSTEM_CODE_ERROR_READ_FAULT;
+    }
+
+    ufc->file = file;
+    ufc->size = info->FileSize;
+
+    gST->BootServices->FreePool(info);
+    return SYSTEM_CODE_SUCCESS;
+}
+#endif /* defined(EFI_BUILD) || defined(UEFI_BUILD) */
 
 static void bootEntryEvent(lv_event_t *event) {
     if (lv_event_get_code(event) != LV_EVENT_CLICKED)
@@ -394,7 +756,9 @@ static void bootEntryEvent(lv_event_t *event) {
 
 static void reboot_btn_cb(lv_event_t *event) {
     (void)event;
+#if !defined(EFI_BUILD) && !defined(UEFI_BUILD)
     outb(0x64U, 0xFEU);
+#endif
     for (;;)
         __asm__ volatile ("hlt");
 }
@@ -573,6 +937,7 @@ static void appendText(char *output, size_t capacity, size_t *used, const char *
     output[*used] = '\0';
 }
 
+#if !defined(EFI_BUILD) && !defined(UEFI_BUILD)
 static void renderAncientBootMenu(char *menuItem[], int count) {
     int has_entries = count > 0 && menuItem != NULL;
     int entry_count = has_entries ? count + (secureMode ? 0 : 1) : (secureMode ? 0 : 1);
@@ -653,6 +1018,13 @@ static void renderAncientBootMenu(char *menuItem[], int count) {
         }
     }
 }
+#else
+static void renderAncientBootMenu(char *menuItem[], int count) {
+    (void)menuItem;
+    (void)count;
+    PSerialWrite("UEFI console menu is handled by EFI services.\r\n");
+}
+#endif
 
 void PANIC(char *message) {
     /* The on-screen report is invisible on a serial-only console, so always
@@ -660,8 +1032,15 @@ void PANIC(char *message) {
     PSerialWrite("PANIC: ");
     PSerialWrite(message != NULL ? message : "(no message)");
     PSerialWrite("\r\n");
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+    /* No VBE framebuffer or LVGL under UEFI; just halt. */
+    for (;;)
+        __asm__ volatile ("cli; hlt");
+#endif
     if (ancientTheme == true) {
+#if !defined(EFI_BUILD) && !defined(UEFI_BUILD)
         (void)call16((void *)setTextMode16, NULL, 0U);
+#endif
         printTL(message);
         die();
     } else {
@@ -682,26 +1061,22 @@ void PANIC(char *message) {
         lv_obj_set_style_bg_color(scr, lv_color_hex(0xE6E6E6), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
         
-        // Use Flex layout to arrange elements vertically down the center
         lv_obj_set_layout(scr, LV_LAYOUT_FLEX);
         lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(scr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_row(scr, 25, LV_PART_MAIN); // Space between components
+        lv_obj_set_style_pad_row(scr, 25, LV_PART_MAIN);
 
-        /* 2. The Frowny Computer Icon (Using LVGL built-in symbol as placeholder) */
         lv_obj_t * icon = lv_label_create(scr);
         lv_label_set_text(icon, LV_SYMBOL_WARNING);
         lv_obj_set_style_text_font(icon, &lv_font_montserrat_28, LV_PART_MAIN);
         lv_obj_set_style_text_color(icon, lv_color_hex(0x333333), LV_PART_MAIN);
 
-        /* 3. Main Header Text */
         lv_obj_t * title = lv_label_create(scr);
         lv_label_set_text(title, "Sorry!");
         lv_obj_set_style_text_font(title, &lv_font_montserrat_20, LV_PART_MAIN);
         lv_obj_set_style_text_color(title, lv_color_hex(0x2E3436), LV_PART_MAIN);
         lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
 
-        /* 4. Secondary Subtext */
         lv_obj_t * subtext = lv_label_create(scr);
         lv_label_set_text_fmt(subtext, "%s\n\nA problem has occurred\n"
                                          "Please contact a system administrator.",
@@ -710,24 +1085,17 @@ void PANIC(char *message) {
         lv_obj_set_style_text_color(subtext, lv_color_hex(0x555753), LV_PART_MAIN);
         lv_obj_set_style_text_align(subtext, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
 
-        /* 5. Action Button */
         lv_obj_t * btn = lv_btn_create(scr);
         lv_obj_set_size(btn, 140, 42);
-
-        /* Themes are disabled in boot/lv_conf.h, so make the background
-         * opaque explicitly or the button's color remains transparent. */
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x007BFF), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x0069D9), LV_STATE_HOVERED);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x0056B3), LV_STATE_PRESSED);
-        lv_obj_set_style_radius(btn, 6, LV_PART_MAIN); // Slightly rounded corners
-        lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN); // Clean flat aesthetic
-        
-        // Attach the event callback
+        lv_obj_set_style_radius(btn, 6, LV_PART_MAIN);
+        lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN);
         lv_obj_add_event_cb(btn, reboot_btn_cb, LV_EVENT_CLICKED, NULL);
 
-        /* 6. Button Text Label */
         lv_obj_t * btn_label = lv_label_create(btn);
         lv_label_set_text(btn_label, "Reboot");
         lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_14, LV_PART_MAIN);
@@ -776,54 +1144,125 @@ void PANIC(char *message) {
     }
 }
 
-void lmain(void) {
-    clearBssAndPreserveVideoState();
-    serialInit();
-    PSerialWrite("ChainLoaded\r\n");
-    PSerialWrite(keyboard_init() ? "Keyboard PS/2 OK\r\n" : "Keyboard PS/2 unavailable\r\n");
-    char *sampleData[] = {
-        "X OS",
-        "Y Option",
-        "OS Kernel (/oskrnl)"
-    };
-    secureMode = false;
-    if (ancientTheme)
-        renderAncientBootMenu(sampleData, 3);
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+EFI_SYSTEM_TABLE *gST = NULL;
+EFI_BOOT_SERVICES *gBS = NULL;
+EFI_HANDLE gImageHandle = NULL;
+#endif
 
-    PSerialWrite(mouse_init() ? "Mouse PS/2 OK\r\n" : "Mouse PS/2 unavailable\r\n");
-    if (headlessMode) {
-        /* Nothing can be clicked or typed on a machine without a display, so
-         * the graphical menu would only delay the kernel from starting. */
-        PSerialWrite("Headless boot: skipping the graphical boot menu.\r\n");
-        loadKernelBootEntry();
-        PSerialWrite("Kernel entry returned without jumping; halting.\r\n");
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
+    gImageHandle = ImageHandle;
+    gST = SystemTable;
+    gBS = SystemTable != NULL ? SystemTable->BootServices : NULL;
+#else
+void lmain(void) {
+    typedef struct __attribute__((packed)) {
+        uint8_t  e_ident[16];
+        uint16_t e_type;
+        uint16_t e_machine;
+        uint32_t e_version;
+        uint64_t e_entry;
+        uint64_t e_phoff;
+        uint64_t e_shoff;
+        uint32_t e_flags;
+        uint16_t e_ehsize;
+        uint16_t e_phentsize;
+        uint16_t e_phnum;
+        uint16_t e_shentsize;
+        uint16_t e_shnum;
+        uint16_t e_shstrndx;
+    } Elf64_Ehdr;
+    typedef struct __attribute__((packed)) {
+        uint32_t p_type;
+        uint32_t p_flags;
+        uint64_t p_offset;
+        uint64_t p_vaddr;
+        uint64_t p_paddr;
+        uint64_t p_filesz;
+        uint64_t p_memsz;
+        uint64_t p_align;
+    } Elf64_Phdr;
+    typedef struct __attribute__((packed)) {
+        uint64_t handleSyscall;
+        uint64_t vbeInfo;
+        uint64_t vbeModeInfo;
+        uint32_t currentMode;
+        uint32_t firmware;
+        uint64_t imageHandle;
+        uint64_t systemTable;
+    } KernelBootProtocol;
+
+    const uint8_t *kernel = (const uint8_t *)(uintptr_t)0x90000U;
+    const Elf64_Ehdr *ehdr = (const Elf64_Ehdr *)kernel;
+    if (ehdr->e_ident[0] != 0x7FU || ehdr->e_ident[1] != 'E' ||
+        ehdr->e_ident[2] != 'L' || ehdr->e_ident[3] != 'F' ||
+        ehdr->e_ident[4] != 2U || ehdr->e_phentsize < sizeof(Elf64_Phdr) ||
+        ehdr->e_phoff > 12288U ||
+        (uint64_t)ehdr->e_phnum * ehdr->e_phentsize > 12288U - ehdr->e_phoff) {
+        PSerialWrite("Invalid /oskrnl ELF image.\r\n");
         for (;;)
             __asm__ volatile ("cli; hlt");
     }
-    if (fallocAt(0x00200000ULL, 128U * 1024U) == NULL) {
-        PSerialWrite("LVGL memory pool reservation failed.\r\n");
-        for (;;)
-            __asm__ volatile("cli; hlt");
-    }
-    PSerialWrite("LVGL 128 KiB pool reserved at 0x00200000.\r\n");
-    lv_init();
-    createBootMenu(sampleData, 3);
-    uint16_t previous_pit_counter = readPitCounter();
-    uint32_t menu_started = lv_tick_get();
-    for (;;) {
-        keyboard_poll();
-        mouse_poll();
-        uint16_t pit_counter = readPitCounter();
-        if (pit_counter > previous_pit_counter)
-            lv_tick_inc(55U); /* PIT channel 0 wraps about every 54.9 ms. */
-        previous_pit_counter = pit_counter;
-        /* A serial-only console cannot operate the menu, so fall back to the
-         * kernel entry when nobody makes a selection in time. */
-        if ((uint32_t)(lv_tick_get() - menu_started) >= 10000U) {
-            PSerialWrite("Boot menu timed out; starting the kernel entry.\r\n");
-            loadKernelBootEntry();
-            menu_started = lv_tick_get();
+
+    uint32_t loaded_segments = 0U;
+    for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+        const Elf64_Phdr *phdr = (const Elf64_Phdr *)(kernel + ehdr->e_phoff +
+                                             (uint64_t)i * ehdr->e_phentsize);
+        if (phdr->p_type != 1U || phdr->p_memsz == 0U)
+            continue;
+        if (phdr->p_filesz > phdr->p_memsz || phdr->p_offset > 12288U ||
+            phdr->p_filesz > 12288U - phdr->p_offset ||
+            phdr->p_vaddr < 0x100000U || phdr->p_vaddr >= 0x100000000ULL ||
+            phdr->p_memsz > 0x100000000ULL - phdr->p_vaddr) {
+            PSerialWrite("Invalid /oskrnl load segment.\r\n");
+            for (;;)
+                __asm__ volatile ("cli; hlt");
         }
-        lv_timer_handler();
+        uint8_t *destination = (uint8_t *)(uintptr_t)phdr->p_vaddr;
+        for (uint64_t j = 0; j < phdr->p_filesz; ++j)
+            destination[j] = kernel[phdr->p_offset + j];
+        for (uint64_t j = phdr->p_filesz; j < phdr->p_memsz; ++j)
+            destination[j] = 0U;
+        ++loaded_segments;
     }
+
+    if (loaded_segments == 0U) {
+        PSerialWrite("No loadable segments in /oskrnl.\r\n");
+        for (;;)
+            __asm__ volatile ("cli; hlt");
+    }
+
+    KernelBootProtocol protocol = {
+        .handleSyscall = 0U,
+        .vbeInfo = (uint64_t)(uintptr_t)&g_vbe_info,
+        .vbeModeInfo = (uint64_t)(uintptr_t)&g_vbe_mode_info,
+        .currentMode = (uint32_t)curVBEMode,
+        .firmware = BIOS,
+        .imageHandle = 0,
+        .systemTable = 0,
+    };
+
+    uint64_t entry = ehdr->e_entry;
+    uintptr_t stack_top = 0x1200000U;
+
+    __asm__ volatile (
+        "push %5\n"
+        "push %4\n"
+        "push %3\n"
+        "push %2\n"
+        "push %1\n"
+        "push %0\n"
+        "call prepareLongMode\n"
+        "add $24, %%esp\n"
+        :
+        : "r"((uint32_t)entry), "r"((uint32_t)(entry >> 32)),
+          "r"((uint32_t)stack_top), "i"(0),
+          "r"((uint32_t)(uintptr_t)&protocol), "i"(0)
+        : "memory"
+    );
+
+    for (;;)
+        __asm__ volatile ("cli; hlt");
+#endif
 }

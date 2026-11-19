@@ -1,3 +1,4 @@
+AS ?=as
 CC ?= gcc
 LD ?= ld
 BUILD_DIR ?= $(abspath ../build)
@@ -5,20 +6,31 @@ EDKII_DIR ?= $(abspath ../tools/edk2)
 EDK2_INCLUDE_ROOT := $(EDKII_DIR)/MdePkg/Include
 KERNEL_ELF=$(BUILD_DIR)/kernel/oskrnl
 
-CFLAGS=-m64 -std=gnu11 -ffreestanding -fno-pie -fno-pic -fno-stack-protector \
+CFLAGS += -m64 -std=gnu11 -ffreestanding -fno-pie -fno-pic -fno-stack-protector \
 	-fno-builtin -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
-	-mcmodel=small -Wall -Wextra -fshort-wchar -malign-double -I../include -I../lib/POSIX-UEFI/uefi \
-	-I"$(EDK2_INCLUDE_ROOT)" -I"$(EDK2_INCLUDE_ROOT)/X64" -I"$(EDK2_INCLUDE_ROOT)/Ia32"
+	-mcmodel=small -Wall -Wextra -fshort-wchar -malign-double \
+	-I"$(EDK2_INCLUDE_ROOT)" -I"$(EDK2_INCLUDE_ROOT)/X64" -I"$(EDK2_INCLUDE_ROOT)/Ia32" \
+	-I"$(abspath ../include)" -DEFI_BUILD
+CFLAGS += $(EXTRA_CFLAGS)
+ASFLAGS = --64 \
+		  -I"$(EDK2_INCLUDE_ROOT)" -I"$(EDK2_INCLUDE_ROOT)/X64" -I"$(EDK2_INCLUDE_ROOT)/Ia32"
 LDFLAGS=-m elf_x86_64 -nostdlib -no-pie -T kernel.ld
 
-.PHONY: all clean
+OBJ := main.o
+include asm/Makefile
+include cpu/Makefile
 
+.PHONY: all
 all: $(KERNEL_ELF)
 
-$(KERNEL_ELF): main.c kernel.ld
+$(KERNEL_ELF): $(OBJ) kernel.ld
 	@mkdir -p "$(@D)"
-	$(CC) $(CFLAGS) -c -o $(BUILD_DIR)/kernel/main.o main.c
-	$(LD) $(LDFLAGS) -o $@ $(BUILD_DIR)/kernel/main.o
+	$(LD) $(LDFLAGS) -o $@ $(addprefix $(BUILD_DIR)/kernel/,$(OBJ))
 
-clean:
-	rm -rf "$(BUILD_DIR)/kernel"
+%.o: %.c
+	@mkdir -p "$(@D)"
+	@$(CC) $(CFLAGS) -c -o $(BUILD_DIR)/kernel/$@ $<
+
+%.a: %.s
+	@mkdir -p "$(@D)"
+	@$(AS) $(ASFLAGS) -c -o $(BUILD_DIR)/kernel/$@ $<

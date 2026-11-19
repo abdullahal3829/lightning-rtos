@@ -3,12 +3,16 @@ SECTIONS
 {
     .text._start 0x7E00 : {
         *(.text._start)
+        . = ALIGN(4);
     }
-    .text.loader : {
-        *(.text)
+    .idt : {
+        *(.idt)
     }
     .lowdata : {
         *(.lowdata)
+    }
+    .text.loader : {
+        *(.text)
     }
     .text : {
         *(.text .text.*)

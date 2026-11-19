@@ -6,16 +6,26 @@
 
 #include "keyboard.h"
 
+#if defined(EFI_BUILD) || defined(UEFI_BUILD)
+#include <Uefi.h>
+#include <Protocol/SimpleTextIn.h>
+extern EFI_SYSTEM_TABLE *gST;
+#else
 extern uint8_t inb(uint16_t port);
 extern void outb(uint16_t port, uint8_t value);
+#endif
 
+enum {
+    KEYBOARD_QUEUE_SIZE = 16,
+};
+
+#if !defined(EFI_BUILD) && !defined(UEFI_BUILD)
 enum {
     PS2_DATA = 0x60,
     PS2_STATUS = 0x64,
     PS2_OUTPUT_FULL = 0x01,
     PS2_INPUT_FULL = 0x02,
     PS2_AUXILIARY = 0x20,
-    KEYBOARD_QUEUE_SIZE = 16,
 };
 
 static const char normal_map[128] = {
@@ -101,9 +111,8 @@ int keyboard_init(void) {
 
     if (!waitInputBufferEmpty())
         return 0;
-    outb(PS2_STATUS, 0xAEU); /* Enable the first PS/2 port. */
+    outb(PS2_STATUS, 0xAEU);
 
-    /* Keep the BIOS/controller-selected scan set and resume key reporting. */
     if (!sendKeyboardByte(0xF5U) || !sendKeyboardByte(0xF4U))
         return 0;
 
@@ -190,7 +199,7 @@ void keyboard_poll(void) {
         if (status == 0xFFU || (status & PS2_OUTPUT_FULL) == 0U)
             break;
         if ((status & PS2_AUXILIARY) != 0U)
-            break; /* Leave mouse bytes for mouse_poll(). */
+            break;
         processScancode(inb(PS2_DATA));
     }
 }
@@ -208,3 +217,92 @@ int keyboard_read_event(KeyboardEvent *event) {
 int keyboard_event_pending(void) {
     return queue_count != 0U;
 }
+#else
+static KeyboardEvent event_queue[KEYBOARD_QUEUE_SIZE];
+static uint8_t queue_head;
+static uint8_t queue_tail;
+static uint8_t queue_count;
+static uint8_t keyboard_available;
+
+static void enqueueEvent(uint8_t scancode, uint8_t extended, uint8_t pressed, uint8_t ascii) {
+    if (queue_count == KEYBOARD_QUEUE_SIZE)
+        return;
+
+    KeyboardEvent *event = &event_queue[queue_tail];
+    event->scancode = scancode;
+    event->extended = extended;
+    event->pressed = pressed;
+    event->ascii = ascii;
+    queue_tail = (uint8_t)((queue_tail + 1U) % KEYBOARD_QUEUE_SIZE);
+    ++queue_count;
+}
+
+static uint8_t mapScanCode(UINT16 scan_code) {
+    switch (scan_code) {
+        case SCAN_ESC: return 0x01U;
+        case SCAN_LEFT: return 0x4BU;
+        case SCAN_UP: return 0x48U;
+        case SCAN_RIGHT: return 0x4DU;
+        case SCAN_DOWN: return 0x50U;
+        case SCAN_HOME: return 0x47U;
+        case SCAN_END: return 0x4FU;
+        case SCAN_DELETE: return 0x53U;
+        case SCAN_PAGE_UP: return 0x49U;
+        case SCAN_PAGE_DOWN: return 0x51U;
+        case SCAN_F1: return 0x3BU;
+        case SCAN_F2: return 0x3CU;
+        case SCAN_F3: return 0x3DU;
+        case SCAN_F4: return 0x3EU;
+        case SCAN_F5: return 0x3FU;
+        case SCAN_F6: return 0x40U;
+        case SCAN_F7: return 0x41U;
+        case SCAN_F8: return 0x42U;
+        case SCAN_F9: return 0x43U;
+        case SCAN_F10: return 0x44U;
+        default: return 0U;
+    }
+}
+
+int keyboard_init(void) {
+    queue_head = 0U;
+    queue_tail = 0U;
+    queue_count = 0U;
+    keyboard_available = (gST != NULL && gST->ConIn != NULL) ? 1U : 0U;
+    return keyboard_available;
+}
+
+void keyboard_poll(void) {
+    if (!keyboard_available || gST == NULL || gST->ConIn == NULL)
+        return;
+
+    EFI_INPUT_KEY key;
+    while (gST->ConIn->ReadKeyStroke(gST->ConIn, &key) == EFI_SUCCESS) {
+        uint8_t scancode = mapScanCode(key.ScanCode);
+        uint8_t extended = (key.ScanCode == SCAN_UP || key.ScanCode == SCAN_DOWN ||
+                            key.ScanCode == SCAN_LEFT || key.ScanCode == SCAN_RIGHT ||
+                            key.ScanCode == SCAN_HOME || key.ScanCode == SCAN_END ||
+                            key.ScanCode == SCAN_DELETE || key.ScanCode == SCAN_PAGE_UP ||
+                            key.ScanCode == SCAN_PAGE_DOWN) ? 1U : 0U;
+        uint8_t ascii = 0U;
+        if (key.UnicodeChar != 0U && key.UnicodeChar < 0x7FU)
+            ascii = (uint8_t)key.UnicodeChar;
+        if (scancode == 0U && ascii == 0U)
+            continue;
+        enqueueEvent(scancode != 0U ? scancode : ascii, extended, 1U, ascii);
+    }
+}
+
+int keyboard_read_event(KeyboardEvent *event) {
+    if (event == 0 || queue_count == 0U)
+        return 0;
+
+    *event = event_queue[queue_head];
+    queue_head = (uint8_t)((queue_head + 1U) % KEYBOARD_QUEUE_SIZE);
+    --queue_count;
+    return 1;
+}
+
+int keyboard_event_pending(void) {
+    return queue_count != 0U;
+}
+#endif
