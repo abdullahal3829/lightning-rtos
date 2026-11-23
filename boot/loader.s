@@ -47,7 +47,11 @@ _start:
     call getMMap
     lea si, [MsgMMapDone]
     call serialWrite
-
+    call vesaInit
+    cmp dword ptr [vbeIsInited], 1
+    js .skipVBE
+    call setMaximumResulation
+.skipVBE:
     # Read /oskrnl from the ISO using El Torito CD-sector addressing.
     mov dl, byte ptr [bootdrive]
     mov word ptr [kernel_dap + 2], 6

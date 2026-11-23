@@ -1,5 +1,6 @@
 .global outb
 .global inb
+.global die
 .text
 # -----------------------------------------------------------------------------
 # void outb(uint16_t port, uint8_t value)
@@ -26,3 +27,9 @@ inb:
     movw    %di, %dx        # Move port to DX (inb requires DX for variable ports)
     inb     (%dx), %al      # Input byte from I/O port in DX into AL
     ret
+
+die:
+    cli
+.Llp:
+    hlt
+    jmp .Llp

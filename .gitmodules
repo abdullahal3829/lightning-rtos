@@ -8,3 +8,4 @@
 [submodule "tools/edk2"]
 	path = tools/edk2
 	url = https://github.com/tianocore/edk2.git
+	branch = stable/202508

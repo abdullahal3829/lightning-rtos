@@ -83,18 +83,11 @@ extern RunningFirmware firmware;
 #define IS_UEFI() (firmware == UEFI)
 #define IS_BIOS() (firmware == BIOS)
 
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-extern uint8_t inb(uint16_t port);
-extern void outb(uint16_t port, uint8_t value);
-#else
-#error "Kernel Doesn't Support Compilation For This Architecture"
-#endif
-
 #ifndef BOOTLDR_BUILD
-extern void INFO(char* message, MESSAGE_TYPE type);
-extern void WARN(char* message, MESSAGE_TYPE type);
-extern void ERROR(char* message, MESSAGE_TYPE type);
-extern void PANIC(char* message, MESSAGE_TYPE type);
+extern void INFO(const char* message, MESSAGE_TYPE type, ...);
+extern void WARN(const char* message, MESSAGE_TYPE type, ...);
+extern void ERROR(const char* message, MESSAGE_TYPE type, ...);
+extern void PANIC(const char* message, MESSAGE_TYPE type, ...);
 #else
 extern void PANIC(char* message);
 #endif

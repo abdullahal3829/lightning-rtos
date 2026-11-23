@@ -19,6 +19,8 @@ LDFLAGS=-m elf_x86_64 -nostdlib -no-pie -T kernel.ld
 OBJ := main.o
 include asm/Makefile
 include cpu/Makefile
+include drivers/Makefile
+include mm/Makefile
 
 .PHONY: all
 all: $(KERNEL_ELF)

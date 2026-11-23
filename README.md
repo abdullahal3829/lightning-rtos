@@ -7,6 +7,7 @@ A Fully Fine-gained Real Time Operating System.
 - `cmake`: For LVGL compilation (for bootloader interface and high-level GUI rendering instead of low-level GUI rendering)
 - `websockify`: For testing in noVNC (in case you develop this OS from a remote server)
 - `xorriso`: For ISO creation
+- `util-linux`/`dosfstools`: Required For Create The FAT Filesystem
 
 ## Features
 - Basic bootloader
@@ -27,6 +28,7 @@ A Fully Fine-gained Real Time Operating System.
 
 ```bash
 git submodule update --init --recursive
+make -C tools/edk2/BaseTools    # Required To Compile The UEFI Base Tools
 make -j$(nproc)
 qemu-system-x86_64 -cdrom ./build/output.iso -m 128M
 # Ignore Above Commands Of Emulation (Not Building Commands) In Case If You Develop This OS From Remote Server. And Execute Command (Located On Below)

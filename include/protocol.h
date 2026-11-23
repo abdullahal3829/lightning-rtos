@@ -203,12 +203,9 @@ typedef enum {
 typedef struct __attribute__((packed)) {
     void* handleSyscall;
     VbeInfoBlock* vbeInfo;
-#if !defined(EFI_BUILD)
     struct vbe_mode_info_structure* vbeModeInfo;
     VbeMode currentMode;
-#else
-    char* padding[sizeof(struct vbe_mode_info_structure) + sizeof(VbeMode)];
-#endif
+    bool isVBEInited;
     RunningFirmware firmware;
 #if defined(EFI_BUILD)
     EFI_HANDLE ImageHandle;

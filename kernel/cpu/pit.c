@@ -5,6 +5,7 @@
  */
 
 #include <cpu/pit.h>
+#include <asm/gpioutil.h>
 #include <definations.h>
 #include <stddef.h>
 #include <stdint.h>

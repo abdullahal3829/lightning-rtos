@@ -11,6 +11,6 @@
   },
 
   "forwardPorts": [],
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y novnc websockify build-essential cmake python3-full gcc-14 g++-14",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y novnc websockify build-essential cmake python3-full gcc-14 g++-14 util-linux dosfstools && echo 'export PATH=\"$PATH:/usr/sbin:/sbin\"' >> ~/.bashrc",
   "postStartCommand": "websockify --web=/usr/share/novnc/ --quiet 6080 127.0.0.1:5901 &"
 }

@@ -28,7 +28,7 @@ all:
 	@cp -f "$(BUILD_DIR)/kernel/oskrnl" "$(BUILD_DIR)/iso/oskrnl"
 	@cp -f "$(UEFI_APP_PATH)" "$(BUILD_DIR)/iso/EFI/BOOT/BOOTX64.EFI"
 	@rm -f "$(BUILD_DIR)/iso/EFI/BOOT/efiboot.img"
-	@mkfs.fat -F 12 -C "$(BUILD_DIR)/iso/EFI/BOOT/efiboot.img" 1440 >/dev/null
+	@mkfs.fat -F 12 -C "$(BUILD_DIR)/iso/EFI/BOOT/efiboot.img" 4096 >/dev/null
 	@mmd -i "$(BUILD_DIR)/iso/EFI/BOOT/efiboot.img" ::EFI >/dev/null
 	@mmd -i "$(BUILD_DIR)/iso/EFI/BOOT/efiboot.img" ::EFI/BOOT >/dev/null
 	@mcopy -i "$(BUILD_DIR)/iso/EFI/BOOT/efiboot.img" "$(UEFI_APP_PATH)" ::EFI/BOOT/BOOTX64.EFI >/dev/null

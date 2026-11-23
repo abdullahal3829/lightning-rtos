@@ -1,0 +1,1 @@
+OBJ += mm/mm.o mm/varutil.o
